@@ -119,8 +119,13 @@ class TechnicalQuantAgent(BaseAiTeamAgent):
             "trend_direction": trend_direction,
             "entry_quality_score": round(entry_quality_score, 2),
         }
+        source_label = (
+            "Alpaca stock bars"
+            if context.execution_mode == "ALPACA_PAPER"
+            else "Binance public klines"
+        )
         reason = (
-            f"Real Binance public klines: trend={trend_direction}, RSI={rsi:.1f}, "
+            f"{source_label}: trend={trend_direction}, RSI={rsi:.1f}, "
             f"EMA gap={ema_gap_pct:.3f}%, ATR volatility={volatility:.3f}%, "
             f"entry quality={entry_quality_score:.1f}."
         )

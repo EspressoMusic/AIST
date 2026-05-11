@@ -60,6 +60,9 @@ TESTNET_STRATEGY_HALT_HOURS = 2.0
 # Stored on DemoTrade.source — surfaced to Flutter /trades.
 TRADE_SOURCE_PAPER_DEMO = "PAPER_DEMO"
 TRADE_SOURCE_BINANCE_TESTNET = "BINANCE_TESTNET"
+TRADE_SOURCE_ALPACA_PAPER = "ALPACA_PAPER"
+ALPACA_AI_TEAM_WATCHED_SYMBOLS = ("AAPL", "TSLA", "NVDA", "SPY", "QQQ")
+ALPACA_PAPER_DEFAULT_ORDER_USD = 1000.0
 
 # --- Execution gate (non-AI safety; bot engine only) ---
 # Kill switch via Settings.bot_kill_switch (env BOT_KILL_SWITCH=true).

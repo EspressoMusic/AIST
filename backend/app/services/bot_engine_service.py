@@ -20,6 +20,7 @@ from app.agents import (
 from app.config import Settings
 from app.demo_bot_constants import (
     ALLOWED_BOT_TESTNET_SYMBOLS,
+    ALPACA_PAPER_DEFAULT_ORDER_USD,
     DEMO_CONFIDENCE_THRESHOLD,
     DEMO_MAX_ORDER_USDT,
     DEMO_RISK_SCORE_THRESHOLD,
@@ -30,6 +31,7 @@ from app.demo_bot_constants import (
     TESTNET_DEV_SL_PCT,
     TESTNET_DEV_TP_PCT,
     TESTNET_MARKET_BUY_QUOTE_USDT,
+    TRADE_SOURCE_ALPACA_PAPER,
     TRADE_SOURCE_BINANCE_TESTNET,
     TRADE_SOURCE_PAPER_DEMO,
 )
@@ -46,6 +48,7 @@ from app.models.execution_mode import ExecutionMode
 from app.models.testnet_order_record import TestnetOrderRecord
 from app.models.testnet_position import TestnetTrackedPosition
 from app.services.binance_testnet_service import BinanceTestnetService
+from app.services.alpaca_paper_service import AlpacaPaperService
 from app.services.ai_provider_service import AIProviderService
 from app.services.bot_state_service import BotStateService
 from app.services.demo_price_display import demo_display_price_map
@@ -70,7 +73,7 @@ _REJ_STRATEGY_HOLD = "Strategy chose HOLD"
 _REJ_NO_TESTNET_POSITION = "No testnet position to sell"
 _REJ_TESTNET_SYMBOL = "Symbol not allowed for bot testnet trading"
 _REJ_AUTONOMY_DISABLED = "Chief demo autonomy is disabled"
-_REJ_ALPACA_NOT_WIRED = "ALPACA_PAPER manual endpoints are available; bot engine execution is not wired yet"
+_REJ_ALPACA_NOT_WIRED = "ALPACA_PAPER is wired through the Chief AI bridge only; regular bot cycle is not wired"
 
 
 def _cumulative_quote_from_binance_response(raw: dict[str, Any]) -> float:
@@ -184,6 +187,7 @@ class BotEngineService:
         exchange: ExchangeService,
         state: BotStateService,
         binance_testnet: BinanceTestnetService,
+        alpaca_paper: AlpacaPaperService | None = None,
         settings: Settings,
         ai_provider: AIProviderService,
         news_source: NewsSourceService,
@@ -191,6 +195,7 @@ class BotEngineService:
         self._exchange = exchange
         self._state = state
         self._binance = binance_testnet
+        self._alpaca = alpaca_paper
         self._settings = settings
         self._ai = ai_provider
         self._news_source = news_source
@@ -465,9 +470,11 @@ class BotEngineService:
                 "opened_trade_id": None,
                 "skip_reason": _REJ_AUTONOMY_DISABLED,
             }
-        if self._state.execution_mode not in {
+        mode = self._state.execution_mode
+        if mode not in {
             ExecutionMode.PAPER_DEMO,
             ExecutionMode.BINANCE_TESTNET,
+            ExecutionMode.ALPACA_PAPER,
         }:
             return {
                 "executed": False,
@@ -532,6 +539,9 @@ class BotEngineService:
                         "skip_reason": "Risk Agent veto is active.",
                     }
 
+        if mode == ExecutionMode.ALPACA_PAPER:
+            return self._execute_chief_alpaca_paper_buy(decision)
+
         tick_seq = self._state.next_demo_price_tick_seq()
         raw = self._exchange.get_prices()
         price_map = demo_display_price_map(raw, tick_seq)
@@ -574,6 +584,135 @@ class BotEngineService:
             "closed_trade_ids": closed_ids,
             "execution_detail": exec_extra,
         }
+
+    def _execute_chief_alpaca_paper_buy(self, decision: DecisionModel) -> dict[str, Any]:
+        """Submit a Chief-approved BUY through Alpaca Paper only."""
+        if self._alpaca is None:
+            return {
+                "executed": False,
+                "opened_trade_id": None,
+                "skip_reason": "Alpaca Paper service is not configured.",
+            }
+        status = self._alpaca.get_status()
+        if not status.get("paper_endpoint_ok"):
+            return {
+                "executed": False,
+                "opened_trade_id": None,
+                "skip_reason": "Alpaca live endpoint is not allowed.",
+            }
+        if not status.get("configured"):
+            return {
+                "executed": False,
+                "opened_trade_id": None,
+                "skip_reason": "Missing Alpaca Paper API credentials.",
+            }
+
+        brain = decision.brain or {}
+        chief = brain.get("chief_decision") if isinstance(brain, dict) else {}
+        requested_notional = (
+            float(chief.get("position_size") or 0.0)
+            if isinstance(chief, dict)
+            else 0.0
+        )
+        notional = requested_notional or float(ALPACA_PAPER_DEFAULT_ORDER_USD)
+        notional = max(0.0, min(notional, float(DEMO_MAX_ORDER_USDT)))
+        if notional <= 0:
+            return {
+                "executed": False,
+                "opened_trade_id": None,
+                "skip_reason": "Chief Alpaca position size is zero.",
+            }
+
+        demo_week_reason = self._state.demo_week_blocked_reason(order_usdt=notional)
+        if demo_week_reason is not None:
+            return {
+                "executed": False,
+                "opened_trade_id": None,
+                "skip_reason": demo_week_reason,
+            }
+
+        sym = decision.symbol.strip().upper()
+        try:
+            positions = self._alpaca.get_positions()
+            active_positions = [
+                row for row in positions if abs(float(row.get("qty") or 0.0)) > 0.0
+            ]
+            if active_positions:
+                return {
+                    "executed": False,
+                    "opened_trade_id": None,
+                    "skip_reason": "Alpaca Paper already has an open position.",
+                    "alpaca_positions_count": len(active_positions),
+                }
+
+            account = self._alpaca.get_account()
+            buying_power = float(account.get("buying_power") or account.get("cash") or 0.0)
+            if buying_power < min(25.0, notional):
+                return {
+                    "executed": False,
+                    "opened_trade_id": None,
+                    "skip_reason": "Alpaca Paper buying power is too low.",
+                    "buying_power": buying_power,
+                }
+            notional = min(notional, buying_power)
+            order = self._alpaca.place_market_buy(sym, notional)
+            latest = self._alpaca.get_latest_price(sym)
+            fill_price = float(
+                order.get("filled_avg_price")
+                or order.get("limit_price")
+                or latest.get("price")
+                or 0.0,
+            )
+            filled_qty = float(order.get("filled_qty") or 0.0)
+            if filled_qty <= 0 and fill_price > 0:
+                filled_qty = notional / fill_price
+            if fill_price <= 0 or filled_qty <= 0:
+                return {
+                    "executed": False,
+                    "opened_trade_id": None,
+                    "skip_reason": "Alpaca Paper order returned no usable fill price or quantity.",
+                    "alpaca_order": order,
+                }
+
+            trade_id = self._state.next_trade_id()
+            trade = DemoTrade(
+                id=trade_id,
+                symbol=sym,
+                side="Buy",
+                entry_price=fill_price,
+                current_price=fill_price,
+                quantity=filled_qty,
+                profit_loss=0.0,
+                opened_at=datetime.now(timezone.utc),
+                is_open=True,
+                reason=(
+                    "Chief AI opened Alpaca Paper BUY after all safety gates. "
+                    f"Alpaca order id={order.get('id')}; paper trading only."
+                ),
+                source=TRADE_SOURCE_ALPACA_PAPER,
+                buy_quote_cost=notional,
+            )
+            self._state.add_open_trade(trade)
+            self._state.exec_gate_on_successful_open()
+            self._state.set_last_open_skipped_reason(None)
+            return {
+                "executed": True,
+                "opened_trade_id": trade_id,
+                "skip_reason": None,
+                "closed_trade_ids": [],
+                "execution_detail": "Alpaca Paper MARKET BUY submitted.",
+                "alpaca_order_id": order.get("id"),
+                "alpaca_order_status": order.get("status"),
+                "paper_trading_only": True,
+                "live_trading_allowed": False,
+            }
+        except Exception as exc:
+            self._state.set_last_error(str(exc))
+            return {
+                "executed": False,
+                "opened_trade_id": None,
+                "skip_reason": f"Alpaca Paper execution failed: {exc}",
+            }
 
     def _finalize_binance_testnet_market_sell(
         self,

@@ -35,11 +35,13 @@ _ai_team_service = AiTeamService(
     settings=get_settings(),
     news_data=_news_data_service,
     ai_provider=_ai_provider_service,
+    alpaca_paper=_alpaca_paper_service,
 )
 _bot_engine_service = BotEngineService(
     exchange=_exchange_service,
     state=_bot_state_service,
     binance_testnet=_binance_testnet_service,
+    alpaca_paper=_alpaca_paper_service,
     settings=get_settings(),
     ai_provider=_ai_provider_service,
     news_source=_news_source_service,

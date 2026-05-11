@@ -36,6 +36,7 @@ class RiskExecutionAgent(BaseAiTeamAgent):
         veto = bool(vetoes)
         trade_allowed = not veto
         suggested_position = self._safe_position_size(snap, risk_points, trade_allowed)
+        current_status = str(snap.get("current_status") or "REAL_DATA")
         if veto:
             action = "HOLD"
             confidence = min(92.0, 58.0 + risk_points)
@@ -60,7 +61,7 @@ class RiskExecutionAgent(BaseAiTeamAgent):
             short_reason=short_reason,
             reason=reason,
             data_used={
-                "current_status": "REAL_DATA",
+                "current_status": current_status,
                 "trade_allowed": trade_allowed,
                 "position_size": suggested_position,
                 "open_trades": snap.get("open_trades", []),
@@ -76,6 +77,10 @@ class RiskExecutionAgent(BaseAiTeamAgent):
                 "cooldown_active": snap.get("cooldown_active"),
                 "cooldown_reason": snap.get("cooldown_reason"),
                 "execution_mode": snap.get("execution_mode"),
+                "buying_power": snap.get("buying_power"),
+                "max_position_size": snap.get("max_position_size"),
+                "data_available": snap.get("data_available", True),
+                "risk_error": snap.get("risk_error"),
                 "risk_points": round(risk_points, 2),
                 "checked_rules": [
                     "kill switch",
@@ -90,7 +95,7 @@ class RiskExecutionAgent(BaseAiTeamAgent):
                 ],
                 "risk_checks": checks,
             },
-            current_status="REAL_DATA",
+            current_status=current_status,  # type: ignore[arg-type]
             trade_allowed=trade_allowed,
             position_size=suggested_position,
             risk_checks=checks,
@@ -106,8 +111,23 @@ class RiskExecutionAgent(BaseAiTeamAgent):
         consecutive_losses = int(snap.get("consecutive_losses") or 0)
         max_losses = int(snap.get("max_consecutive_losses") or 3)
         cooldown = bool(snap.get("cooldown_active"))
+        data_available = bool(snap.get("data_available", True))
+        has_buying_power = "buying_power" in snap
+        buying_power = float(snap.get("buying_power") or 0.0)
+        max_position_size = float(snap.get("max_position_size") or snap.get("suggested_position_size_default") or 0.0)
+        buying_power_ok = (not has_buying_power) or buying_power >= min(25.0, max_position_size or 25.0)
 
         return {
+            "data_available": {
+                "passed": data_available,
+                "veto": not data_available,
+                "reason": (
+                    "Risk data is available."
+                    if data_available
+                    else str(snap.get("risk_error") or "Risk data is unavailable.")
+                ),
+                "risk_points": 100 if not data_available else 0,
+            },
             "kill_switch": {
                 "passed": not kill,
                 "veto": kill,
@@ -160,6 +180,18 @@ class RiskExecutionAgent(BaseAiTeamAgent):
                 "reason": str(snap.get("cooldown_reason") or "No cooldown is active."),
                 "risk_points": 30 if cooldown else 0,
             },
+            "buying_power": {
+                "passed": buying_power_ok,
+                "veto": not buying_power_ok,
+                "reason": (
+                    f"Buying power {buying_power:.2f} supports max position {max_position_size:.2f}."
+                    if has_buying_power and buying_power_ok
+                    else "Buying power is not required for this execution mode."
+                    if not has_buying_power
+                    else f"Buying power {buying_power:.2f} is too low for a safe position."
+                ),
+                "risk_points": 35 if not buying_power_ok else 0,
+            },
         }
 
     def _safe_position_size(
@@ -171,10 +203,13 @@ class RiskExecutionAgent(BaseAiTeamAgent):
         if not trade_allowed:
             return 0.0
         base = float(snap.get("suggested_position_size_default") or 100.0)
+        buying_power = float(snap.get("buying_power") or base)
+        max_position_size = float(snap.get("max_position_size") or base)
         drawdown = float(snap.get("drawdown_proxy") or 0.0)
         multiplier = 1.0
         if risk_points >= 20:
             multiplier *= 0.75
         if drawdown < 0:
             multiplier *= 0.85
-        return round(max(25.0, min(base, base * multiplier)), 2)
+        capped = min(base, max_position_size, buying_power, base * multiplier)
+        return round(max(25.0, capped), 2) if capped >= 25.0 else 0.0

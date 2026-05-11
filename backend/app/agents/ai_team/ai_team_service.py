@@ -12,10 +12,14 @@ from app.agents.ai_team.risk_execution_agent import RiskExecutionAgent
 from app.agents.ai_team.technical_quant_agent import TechnicalQuantAgent
 from app.services.bot_state_service import BotStateService
 from app.services.exchange_service import ExchangeService
+from app.services.alpaca_paper_service import AlpacaPaperService
 from app.services.ai_provider_service import AIProviderService
 from app.services.news_data_service import NewsDataService
 from app.config import Settings
 from app.demo_bot_constants import (
+    ALPACA_AI_TEAM_WATCHED_SYMBOLS,
+    ALPACA_PAPER_DEFAULT_ORDER_USD,
+    DEMO_MAX_ORDER_USDT,
     EXEC_GATE_DAILY_MAX_LOSS_USDT,
     EXEC_GATE_GLOBAL_OPEN_COOLDOWN_SECONDS,
     EXEC_GATE_MAX_OPENS_PER_DAY,
@@ -24,8 +28,10 @@ from app.demo_bot_constants import (
 )
 from app.models.decision_model import DecisionModel
 from app.models.demo_trade import closed_trade_realized_pl
+from app.models.execution_mode import ExecutionMode
 
 _WATCHED_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
+_ALPACA_WATCHED_SYMBOLS = list(ALPACA_AI_TEAM_WATCHED_SYMBOLS)
 _AGENT_KEYS = {
     "Risk & Execution Agent": "RISK",
     "Macro & Sentiment Agent": "MACRO",
@@ -43,11 +49,13 @@ class AiTeamService:
         settings: Settings,
         news_data: NewsDataService | None = None,
         ai_provider: AIProviderService | None = None,
+        alpaca_paper: AlpacaPaperService | None = None,
     ) -> None:
         self._exchange = exchange
         self._state = state
         self._settings = settings
         self._ai_provider = ai_provider
+        self._alpaca = alpaca_paper
         self._execution_bridge: Any | None = None
         self._agents = [
             RiskExecutionAgent(),
@@ -103,7 +111,7 @@ class AiTeamService:
         return response
 
     def status(self) -> dict[str, Any]:
-        context = self._build_context("BTCUSDT")
+        context = self._build_context(self._default_symbol_for_mode())
         outputs: list[AgentResponse] = [agent.analyze(context) for agent in self._agents]
         return {
             "agents_total": len(outputs),
@@ -169,6 +177,11 @@ class AiTeamService:
         }
 
     def _build_context(self, symbol: str) -> AiTeamContext:
+        if self._state.execution_mode == ExecutionMode.ALPACA_PAPER:
+            return self._build_alpaca_context(symbol)
+        return self._build_crypto_context(symbol)
+
+    def _build_crypto_context(self, symbol: str) -> AiTeamContext:
         requested = symbol.strip().upper() or "BTCUSDT"
         market_snapshot = self._exchange.get_asset_market_snapshot(_WATCHED_SYMBOLS)
         asset_market_data = {
@@ -221,6 +234,221 @@ class AiTeamService:
             ),  # type: ignore[arg-type]
             risk_snapshot=risk_snapshot,
         )
+
+    def _build_alpaca_context(self, symbol: str) -> AiTeamContext:
+        requested = symbol.strip().upper() or "AAPL"
+        if requested not in _ALPACA_WATCHED_SYMBOLS:
+            requested = "AAPL"
+        if self._alpaca is None:
+            market_snapshot = {
+                "current_status": "MOCK",
+                "data_sources": ["mock_alpaca_unconfigured"],
+                "assets": {},
+                "error": "Alpaca Paper service is not configured.",
+            }
+        else:
+            market_snapshot = self._alpaca.get_stock_market_snapshot(_ALPACA_WATCHED_SYMBOLS)
+        asset_market_data = {
+            key: dict(value)
+            for key, value in dict(market_snapshot.get("assets") or {}).items()
+            if isinstance(value, dict)
+        }
+        prices = {
+            key: float(value.get("latest_price") or 0.0)
+            for key, value in asset_market_data.items()
+        }
+        selected = self._strongest_symbol_from_market(
+            asset_market_data,
+            fallback=requested,
+            watched=_ALPACA_WATCHED_SYMBOLS,
+        )
+        technical_snapshot = (
+            self._alpaca.get_stock_bars_snapshot(selected)
+            if self._alpaca is not None
+            else {
+                "current_status": "MOCK",
+                "data_sources": ["mock_alpaca_unconfigured"],
+                "candles": [],
+            }
+        )
+        technical_sources = [
+            str(item) for item in list(technical_snapshot.get("data_sources") or [])
+        ]
+        data_sources = [
+            str(item) for item in list(market_snapshot.get("data_sources") or [])
+        ]
+        risk_snapshot = self._build_alpaca_risk_snapshot(selected)
+        return AiTeamContext(
+            symbol=selected,
+            watched_symbols=_ALPACA_WATCHED_SYMBOLS,
+            prices=prices,
+            current_price=float(prices.get(selected, 0.0)),
+            open_positions=int(risk_snapshot.get("current_open_position_count") or 0),
+            daily_loss=float(risk_snapshot.get("daily_loss") or 0.0),
+            trade_count_today=int(risk_snapshot.get("trade_count_today") or 0),
+            consecutive_losses=self._state.consecutive_closed_losses(selected),
+            decisions_count=len(self._state.decisions_newest_first()),
+            execution_mode=self._state.execution_mode.value,
+            data_source=",".join(data_sources) if data_sources else "alpaca_paper",
+            asset_market_data=asset_market_data,
+            asset_data_sources=data_sources,
+            asset_current_status=str(
+                market_snapshot.get("current_status") or "MOCK",
+            ),  # type: ignore[arg-type]
+            technical_candles=[
+                dict(item)
+                for item in list(technical_snapshot.get("candles") or [])
+                if isinstance(item, dict)
+            ],
+            technical_data_sources=technical_sources,
+            technical_current_status=str(
+                technical_snapshot.get("current_status") or "MOCK",
+            ),  # type: ignore[arg-type]
+            risk_snapshot=risk_snapshot,
+        )
+
+    def _default_symbol_for_mode(self) -> str:
+        if self._state.execution_mode == ExecutionMode.ALPACA_PAPER:
+            return "AAPL"
+        return "BTCUSDT"
+
+    def _strongest_symbol_from_market(
+        self,
+        market: dict[str, dict[str, Any]],
+        *,
+        fallback: str,
+        watched: list[str],
+    ) -> str:
+        best_symbol = fallback
+        best_score = -1.0
+        max_quote_volume = max(
+            [
+                float((market.get(symbol) or {}).get("quote_volume") or 0.0)
+                for symbol in watched
+            ]
+            or [0.0],
+        )
+        for symbol in watched:
+            row = dict(market.get(symbol) or {})
+            latest = float(row.get("latest_price") or 0.0)
+            change_24h = float(row.get("price_change_percent_24h") or 0.0)
+            movement = float(row.get("recent_price_movement_pct") or change_24h)
+            quote_volume = float(row.get("quote_volume") or 0.0)
+            high = float(row.get("high_price") or 0.0)
+            low = float(row.get("low_price") or 0.0)
+            range_pct = ((high - low) / latest * 100.0) if latest > 0 and high > low else 0.0
+            volume_component = (
+                quote_volume / max_quote_volume * 25.0 if max_quote_volume > 0 else 0.0
+            )
+            score = (
+                45.0
+                + max(-25.0, min(35.0, change_24h * 4.0))
+                + max(-15.0, min(20.0, movement * 2.0))
+                + max(0.0, min(10.0, range_pct))
+                + volume_component
+            )
+            if score > best_score:
+                best_score = score
+                best_symbol = symbol
+        return best_symbol
+
+    def _build_alpaca_risk_snapshot(self, symbol: str) -> dict[str, Any]:
+        exec_snapshot = self._state.exec_gate_snapshot()
+        base = {
+            "symbol": symbol,
+            "execution_mode": self._state.execution_mode.value,
+            "kill_switch_active": bool(self._settings.bot_kill_switch),
+            "closed_trades_count": len([t for t in self._state.history_trades() if not t.is_open]),
+            "daily_loss": float(exec_snapshot.get("realized_pnl_today") or 0.0),
+            "daily_loss_limit": EXEC_GATE_DAILY_MAX_LOSS_USDT,
+            "trade_count_today": int(exec_snapshot.get("opens_today") or 0),
+            "daily_trade_limit": EXEC_GATE_MAX_OPENS_PER_DAY,
+            "consecutive_losses": self._state.consecutive_closed_losses(symbol),
+            "max_consecutive_losses": TESTNET_STRATEGY_MAX_CONSECUTIVE_LOSSES,
+            "cooldown_active": False,
+            "cooldown_reason": None,
+            "global_open_cooldown_seconds": EXEC_GATE_GLOBAL_OPEN_COOLDOWN_SECONDS,
+            "last_open_utc": exec_snapshot.get("last_open_utc"),
+            "drawdown_proxy": self._state.drawdown_proxy(),
+            "exec_gate_snapshot": dict(exec_snapshot),
+            "max_position_size": float(DEMO_MAX_ORDER_USDT),
+            "suggested_position_size_default": float(ALPACA_PAPER_DEFAULT_ORDER_USD),
+        }
+        if self._alpaca is None:
+            return {
+                **base,
+                "current_status": "MOCK",
+                "data_available": False,
+                "current_open_position_count": self._state.effective_open_positions_for_risk(),
+                "open_trades_count": self._state.effective_open_positions_for_risk(),
+                "open_trades": [],
+                "portfolio": {},
+                "realized_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "buying_power": 0.0,
+                "risk_error": "Alpaca Paper service is not configured.",
+            }
+        try:
+            account = self._alpaca.get_account()
+            positions = self._alpaca.get_positions()
+            active_positions = [
+                row for row in positions if abs(float(row.get("qty") or 0.0)) > 0.0
+            ]
+            buying_power = float(account.get("buying_power") or account.get("cash") or 0.0)
+            equity = float(account.get("equity") or 0.0)
+            last_equity = float(account.get("last_equity") or equity or 0.0)
+            alpaca_daily_pnl = equity - last_equity
+            daily_loss = min(float(base["daily_loss"]), alpaca_daily_pnl)
+            max_position = max(
+                0.0,
+                min(float(DEMO_MAX_ORDER_USDT), float(ALPACA_PAPER_DEFAULT_ORDER_USD), buying_power * 0.1),
+            )
+            return {
+                **base,
+                "current_status": "REAL_DATA",
+                "data_available": True,
+                "alpaca_account": {
+                    "status": account.get("status"),
+                    "currency": account.get("currency"),
+                    "cash": account.get("cash"),
+                    "buying_power": account.get("buying_power"),
+                    "equity": account.get("equity"),
+                    "last_equity": account.get("last_equity"),
+                },
+                "buying_power": round(buying_power, 2),
+                "cash": float(account.get("cash") or 0.0),
+                "equity": equity,
+                "daily_loss": round(daily_loss, 8),
+                "alpaca_daily_pnl": round(alpaca_daily_pnl, 8),
+                "open_trades": active_positions,
+                "open_trades_count": len(active_positions),
+                "current_open_position_count": len(active_positions),
+                "portfolio": {
+                    "equity": equity,
+                    "cash": float(account.get("cash") or 0.0),
+                    "buying_power": buying_power,
+                    "alpaca_daily_pnl": alpaca_daily_pnl,
+                },
+                "realized_pnl": float(base["daily_loss"]),
+                "unrealized_pnl": sum(float(row.get("unrealized_pl") or 0.0) for row in active_positions),
+                "max_position_size": round(max_position, 2),
+                "suggested_position_size_default": round(max_position, 2),
+            }
+        except Exception as exc:
+            self._state.set_last_error(str(exc))
+            return {
+                **base,
+                "current_status": "MOCK",
+                "data_available": False,
+                "current_open_position_count": self._state.effective_open_positions_for_risk(),
+                "open_trades_count": self._state.effective_open_positions_for_risk(),
+                "open_trades": [],
+                "portfolio": {},
+                "realized_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "buying_power": 0.0,
+                "risk_error": str(exc),
+            }
 
     def _chat_targets(self, message: str, target: str) -> set[str]:
         if target in {"RISK", "MACRO", "TECHNICAL", "ASSET_SCOUT", "CHIEF"}:
@@ -316,6 +544,7 @@ class AiTeamService:
         last_open_utc = exec_snapshot.get("last_open_utc")
         return {
             "current_status": "REAL_DATA",
+            "data_available": True,
             "symbol": symbol,
             "execution_mode": self._state.execution_mode.value,
             "kill_switch_active": bool(self._settings.bot_kill_switch),
@@ -510,7 +739,7 @@ class AiTeamService:
             explanation = f"{explanation} Chief bridge did not open a trade: {skip_reason}."
         elif bridge_result.get("executed"):
             explanation = (
-                f"{explanation} Chief bridge opened demo/testnet trade "
+                f"{explanation} Chief bridge opened demo/paper trade "
                 f"{bridge_result.get('opened_trade_id')}."
             )
         return decision.model_copy(

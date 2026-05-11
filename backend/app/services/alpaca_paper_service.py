@@ -15,6 +15,13 @@ from app.config import Settings
 
 _REQUEST_TIMEOUT_SEC = 15.0
 _PAPER_HOST = "paper-api.alpaca.markets"
+_STOCK_FALLBACKS: dict[str, dict[str, float]] = {
+    "AAPL": {"latest_price": 190.0, "price_change_percent_24h": 0.25, "volume": 52000000.0},
+    "TSLA": {"latest_price": 185.0, "price_change_percent_24h": -0.45, "volume": 93000000.0},
+    "NVDA": {"latest_price": 900.0, "price_change_percent_24h": 0.85, "volume": 42000000.0},
+    "SPY": {"latest_price": 525.0, "price_change_percent_24h": 0.18, "volume": 71000000.0},
+    "QQQ": {"latest_price": 445.0, "price_change_percent_24h": 0.38, "volume": 51000000.0},
+}
 
 
 class AlpacaPaperService:
@@ -95,6 +102,92 @@ class AlpacaPaperService:
             "source": "alpaca_latest_quote",
             "raw": quote,
         }
+
+    def get_stock_bars(
+        self,
+        symbol: str,
+        *,
+        timeframe: str = "15Min",
+        limit: int = 120,
+    ) -> list[dict[str, Any]]:
+        sym = self._clean_symbol(symbol)
+        lim = max(30, min(int(limit), 1000))
+        data = self._request_data(
+            "GET",
+            f"/v2/stocks/{sym}/bars",
+            params={
+                "timeframe": timeframe,
+                "limit": str(lim),
+                "feed": "iex",
+                "sort": "asc",
+            },
+        )
+        if not isinstance(data, dict):
+            raise RuntimeError("Unexpected Alpaca bars response shape")
+        bars = data.get("bars")
+        if not isinstance(bars, list):
+            raise RuntimeError(f"Missing Alpaca bars for {sym}")
+        return [dict(row) for row in bars if isinstance(row, dict)]
+
+    def get_stock_market_snapshot(self, symbols: list[str]) -> dict[str, Any]:
+        watched = [self._clean_symbol(symbol) for symbol in symbols if symbol.strip()]
+        try:
+            self._ensure_ready()
+            assets: dict[str, dict[str, Any]] = {}
+            for symbol in watched:
+                latest = self.get_latest_price(symbol)
+                latest_price = float(latest.get("price") or 0.0)
+                bars = self.get_stock_bars(symbol, timeframe="1Hour", limit=24)
+                assets[symbol] = _stock_snapshot_from_bars(
+                    symbol,
+                    latest_price=latest_price,
+                    bars=bars,
+                    source=str(latest.get("source") or "alpaca_latest_price"),
+                )
+            return {
+                "current_status": "REAL_DATA",
+                "data_sources": ["alpaca_paper_latest_price", "alpaca_stock_bars_iex"],
+                "assets": assets,
+                "error": None,
+            }
+        except Exception as exc:
+            return {
+                "current_status": "MOCK",
+                "data_sources": ["mock_alpaca_stock_market_snapshot"],
+                "assets": _mock_stock_market_assets(watched),
+                "error": str(exc),
+            }
+
+    def get_stock_bars_snapshot(
+        self,
+        symbol: str,
+        *,
+        timeframe: str = "15Min",
+        limit: int = 120,
+    ) -> dict[str, Any]:
+        sym = self._clean_symbol(symbol)
+        try:
+            bars = self.get_stock_bars(sym, timeframe=timeframe, limit=limit)
+            candles = [_normalize_alpaca_bar(row, i) for i, row in enumerate(bars)]
+            if len(candles) < 30:
+                raise RuntimeError("Not enough Alpaca stock candles")
+            return {
+                "current_status": "REAL_DATA",
+                "data_sources": ["alpaca_stock_bars_iex"],
+                "symbol": sym,
+                "interval": timeframe,
+                "candles": candles,
+                "error": None,
+            }
+        except Exception as exc:
+            return {
+                "current_status": "MOCK",
+                "data_sources": ["mock_alpaca_stock_bars"],
+                "symbol": sym,
+                "interval": timeframe,
+                "candles": _mock_stock_bars(sym, limit),
+                "error": str(exc),
+            }
 
     def place_market_buy(self, symbol: str, notional_amount: float) -> dict[str, Any]:
         amount = float(notional_amount)
@@ -231,3 +324,97 @@ def _nested_number(payload: dict[str, Any], outer: str, inner: str) -> float | N
     if value is None:
         return None
     return float(value)
+
+
+def _stock_snapshot_from_bars(
+    symbol: str,
+    *,
+    latest_price: float,
+    bars: list[dict[str, Any]],
+    source: str,
+) -> dict[str, Any]:
+    if not bars:
+        fallback = _STOCK_FALLBACKS.get(symbol, {"latest_price": latest_price or 100.0})
+        bars = _mock_stock_bars(symbol, 30, base=float(fallback.get("latest_price") or 100.0))
+    first_open = float(bars[0].get("o") or bars[0].get("open") or latest_price or 0.0)
+    closes = [float(row.get("c") or row.get("close") or 0.0) for row in bars]
+    highs = [float(row.get("h") or row.get("high") or 0.0) for row in bars]
+    lows = [float(row.get("l") or row.get("low") or 0.0) for row in bars]
+    volumes = [float(row.get("v") or row.get("volume") or 0.0) for row in bars]
+    close_basis = latest_price or (closes[-1] if closes else first_open)
+    change_pct = (
+        (close_basis - first_open) / first_open * 100.0
+        if first_open > 0
+        else 0.0
+    )
+    volume = sum(volumes)
+    return {
+        "symbol": symbol,
+        "latest_price": round(close_basis, 8),
+        "recent_price_movement_pct": round(change_pct, 4),
+        "price_change_percent_24h": round(change_pct, 4),
+        "volume": round(volume, 4),
+        "quote_volume": round(volume * close_basis, 4),
+        "high_price": round(max(highs) if highs else close_basis, 8),
+        "low_price": round(min(lows) if lows else close_basis, 8),
+        "open_price": round(first_open, 8),
+        "source": source,
+    }
+
+
+def _normalize_alpaca_bar(row: dict[str, Any], index: int) -> dict[str, float]:
+    return {
+        "open_time": float(index),
+        "open": float(row.get("o") or row.get("open") or 0.0),
+        "high": float(row.get("h") or row.get("high") or 0.0),
+        "low": float(row.get("l") or row.get("low") or 0.0),
+        "close": float(row.get("c") or row.get("close") or 0.0),
+        "volume": float(row.get("v") or row.get("volume") or 0.0),
+    }
+
+
+def _mock_stock_market_assets(symbols: list[str]) -> dict[str, dict[str, Any]]:
+    return {
+        symbol: _stock_snapshot_from_bars(
+            symbol,
+            latest_price=float(
+                _STOCK_FALLBACKS.get(symbol, {}).get("latest_price") or 100.0,
+            ),
+            bars=_mock_stock_bars(symbol, 48),
+            source="mock_stock_price",
+        )
+        for symbol in symbols
+    }
+
+
+def _mock_stock_bars(
+    symbol: str,
+    limit: int,
+    *,
+    base: float | None = None,
+) -> list[dict[str, float]]:
+    fallback = _STOCK_FALLBACKS.get(symbol, {})
+    base_price = float(base or fallback.get("latest_price") or 100.0)
+    direction = float(fallback.get("price_change_percent_24h") or 0.0) / 100.0
+    candles: list[dict[str, float]] = []
+    last = base_price * (1.0 - direction)
+    count = max(30, min(limit, 180))
+    for i in range(count):
+        progress = (i + 1) / count
+        drift = base_price * direction * progress / max(count / 12.0, 1.0)
+        wave = base_price * 0.0018 * (1 if i % 8 < 4 else -1)
+        close = max(base_price * 0.25, last + drift + wave)
+        high = max(last, close) * 1.0015
+        low = min(last, close) * 0.9985
+        candles.append(
+            {
+                "open_time": float(i),
+                "open": round(last, 8),
+                "high": round(high, 8),
+                "low": round(low, 8),
+                "close": round(close, 8),
+                "volume": round(float(fallback.get("volume") or 1000000.0) / count, 4),
+            },
+        )
+        last = close
+    return candles
