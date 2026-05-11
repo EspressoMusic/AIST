@@ -5,6 +5,7 @@ from app.config import get_settings, parse_csv
 from app.routes import (
     ai_advisor_routes,
     ai_team_routes,
+    alpaca_paper_routes,
     binance_testnet_routes,
     bot_insights_routes,
     bot_routes,
@@ -37,6 +38,7 @@ def create_app() -> FastAPI:
     app.include_router(health_routes.router)
     app.include_router(ai_advisor_routes.router)
     app.include_router(ai_team_routes.router)
+    app.include_router(alpaca_paper_routes.router)
     app.include_router(binance_testnet_routes.router)
     app.include_router(market_routes.router)
     app.include_router(portfolio_routes.router)

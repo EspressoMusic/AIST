@@ -25,7 +25,7 @@ class SymbolPerformanceSummary(BaseModel):
 
 
 class PerformanceResponse(BaseModel):
-    execution_mode: Literal["PAPER_DEMO", "BINANCE_TESTNET"]
+    execution_mode: Literal["PAPER_DEMO", "BINANCE_TESTNET", "ALPACA_PAPER"]
     total_trades: int = Field(ge=0)
     winning_trades: int = Field(ge=0)
     losing_trades: int = Field(ge=0)

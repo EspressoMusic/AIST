@@ -28,7 +28,7 @@ class BotStatusResponse(BaseModel):
     open_trades_count: int
     history_count: int
     decisions_count: int
-    execution_mode: Literal["PAPER_DEMO", "BINANCE_TESTNET"] = "BINANCE_TESTNET"
+    execution_mode: Literal["PAPER_DEMO", "BINANCE_TESTNET", "ALPACA_PAPER"] = "BINANCE_TESTNET"
     has_open_position: bool = False
     open_position_symbol: str | None = None
     open_position_source: str | None = None
@@ -97,11 +97,11 @@ class ForceDemoTradeRequest(BaseModel):
 
 
 class ExecutionModeResponse(BaseModel):
-    mode: Literal["PAPER_DEMO", "BINANCE_TESTNET"]
+    mode: Literal["PAPER_DEMO", "BINANCE_TESTNET", "ALPACA_PAPER"]
 
 
 class ExecutionModeSetRequest(BaseModel):
-    mode: Literal["PAPER_DEMO", "BINANCE_TESTNET"]
+    mode: Literal["PAPER_DEMO", "BINANCE_TESTNET", "ALPACA_PAPER"]
 
 
 class TestnetTrackedOrderRow(BaseModel):

@@ -70,6 +70,7 @@ _REJ_STRATEGY_HOLD = "Strategy chose HOLD"
 _REJ_NO_TESTNET_POSITION = "No testnet position to sell"
 _REJ_TESTNET_SYMBOL = "Symbol not allowed for bot testnet trading"
 _REJ_AUTONOMY_DISABLED = "Chief demo autonomy is disabled"
+_REJ_ALPACA_NOT_WIRED = "ALPACA_PAPER manual endpoints are available; bot engine execution is not wired yet"
 
 
 def _cumulative_quote_from_binance_response(raw: dict[str, Any]) -> float:
@@ -305,11 +306,13 @@ class BotEngineService:
         if skip_reason is None:
             if mode == ExecutionMode.PAPER_DEMO:
                 opened_id = self._open_demo_trade(decision, mid)
-            else:
+            elif mode == ExecutionMode.BINANCE_TESTNET:
                 opened_id, skip_reason, tn_closed, exec_extra = (
                     self._execute_binance_testnet(decision, price_map)
                 )
                 closed_ids = [*closed_ids, *tn_closed]
+            else:
+                skip_reason = _REJ_ALPACA_NOT_WIRED
             if opened_id is not None:
                 self._state.exec_gate_on_successful_open()
 
@@ -389,6 +392,8 @@ class BotEngineService:
             return None
 
         mode = self._state.execution_mode
+        if mode == ExecutionMode.ALPACA_PAPER:
+            return _REJ_ALPACA_NOT_WIRED
         demo_week_reason = self._state.demo_week_blocked_reason(
             order_usdt=TESTNET_MARKET_BUY_QUOTE_USDT,
         )

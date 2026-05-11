@@ -10,6 +10,12 @@ import 'dart:io';
 /// | Android `USE_USB_REVERSE=true` | `http://127.0.0.1:8001` |
 /// | Physical Android (LAN) | `http://192.168.1.173:8001` |
 /// | Android emulator (`ANDROID_EMULATOR=true`) | `http://10.0.2.2:8001` |
+/// | Cloud override (`API_BASE_URL=...`) | provided URL |
+///
+/// Cloud:
+/// ```bash
+/// flutter run --dart-define=API_BASE_URL=https://aist-backend.onrender.com
+/// ```
 ///
 /// USB reverse:
 /// ```bash
@@ -33,6 +39,11 @@ class BackendConfig {
   /// Physical phone on same LAN as PC (update host if DHCP changes).
   static const String physicalLanUrl = 'http://192.168.1.173:8001';
 
+  static const String _apiBaseUrlOverride = String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: '',
+  );
+
   static const bool _useUsbReverse = bool.fromEnvironment(
     'USE_USB_REVERSE',
     defaultValue: false,
@@ -44,9 +55,12 @@ class BackendConfig {
   );
 
   static String get defaultBaseUrl {
-    if (Platform.isWindows ||
-        Platform.isLinux ||
-        Platform.isMacOS) {
+    final override = _apiBaseUrlOverride.trim();
+    if (override.isNotEmpty) {
+      return override;
+    }
+
+    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       return desktopAndUsbReverseUrl;
     }
 

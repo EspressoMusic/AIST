@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     binance_testnet_base_url: str = "https://testnet.binance.vision/api"
     use_binance_testnet: bool = False
 
+    # Alpaca Paper Trading (server-side paper credentials only; never live endpoint).
+    alpaca_paper_api_key: str = ""
+    alpaca_paper_api_secret: str = ""
+    alpaca_paper_base_url: str = "https://paper-api.alpaca.markets"
+    alpaca_data_base_url: str = "https://data.alpaca.markets"
+
     # Public spot REST (read-only ticker prices — no API key)
     binance_public_base_url: str = "https://api.binance.com"
 
