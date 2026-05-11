@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.config import get_settings
 from app.agents.ai_team.ai_team_service import AiTeamService
+from app.models.execution_mode import ExecutionMode
 from app.services.bot_engine_service import BotEngineService
 from app.services.bot_state_service import BotStateService
 from app.services.binance_testnet_service import BinanceTestnetService
@@ -14,25 +15,42 @@ from app.services.news_source_service import NewsSourceService
 from app.services.news_data_service import NewsDataService
 from app.services.portfolio_service import PortfolioService
 
+_settings = get_settings()
+
 # Single shared bot state (trades, decisions, etc.)
 _bot_state_service = BotStateService()
 
+
+def _apply_initial_execution_mode() -> None:
+    raw = str(_settings.execution_mode or "").strip().upper()
+    if not raw:
+        return
+    try:
+        _bot_state_service.set_execution_mode(ExecutionMode(raw))
+    except ValueError:
+        _bot_state_service.set_last_error(
+            f"Invalid EXECUTION_MODE={raw!r}; using BINANCE_TESTNET.",
+        )
+
+
+_apply_initial_execution_mode()
+
 # Portfolio reads from the same BotStateService as the bot engine
-_binance_testnet_service = BinanceTestnetService(get_settings())
-_alpaca_paper_service = AlpacaPaperService(get_settings())
+_binance_testnet_service = BinanceTestnetService(_settings)
+_alpaca_paper_service = AlpacaPaperService(_settings)
 _portfolio_service = PortfolioService(
     _bot_state_service,
     _binance_testnet_service,
 )
 
 _exchange_service = ExchangeService()
-_ai_provider_service = AIProviderService(get_settings())
-_news_source_service = NewsSourceService(get_settings())
+_ai_provider_service = AIProviderService(_settings)
+_news_source_service = NewsSourceService(_settings)
 _news_data_service = NewsDataService(_news_source_service)
 _ai_team_service = AiTeamService(
     exchange=_exchange_service,
     state=_bot_state_service,
-    settings=get_settings(),
+    settings=_settings,
     news_data=_news_data_service,
     ai_provider=_ai_provider_service,
     alpaca_paper=_alpaca_paper_service,
@@ -42,7 +60,7 @@ _bot_engine_service = BotEngineService(
     state=_bot_state_service,
     binance_testnet=_binance_testnet_service,
     alpaca_paper=_alpaca_paper_service,
-    settings=get_settings(),
+    settings=_settings,
     ai_provider=_ai_provider_service,
     news_source=_news_source_service,
 )

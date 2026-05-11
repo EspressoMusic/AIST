@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     app_name: str = "Trading Bot API"
     debug: bool = False
     environment: str = "development"
+    execution_mode: str = "BINANCE_TESTNET"
 
     # Server startup. Used by `python -m app.run`; cloud platforms may also set
     # PORT and run uvicorn directly.

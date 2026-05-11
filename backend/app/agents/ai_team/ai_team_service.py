@@ -257,11 +257,7 @@ class AiTeamService:
             key: float(value.get("latest_price") or 0.0)
             for key, value in asset_market_data.items()
         }
-        selected = self._strongest_symbol_from_market(
-            asset_market_data,
-            fallback=requested,
-            watched=_ALPACA_WATCHED_SYMBOLS,
-        )
+        selected = requested
         technical_snapshot = (
             self._alpaca.get_stock_bars_snapshot(selected)
             if self._alpaca is not None
