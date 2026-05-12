@@ -78,19 +78,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final scheme = Theme.of(context).colorScheme;
     final backend = widget.backendProvider;
     final health = backend.systemHealth ?? const <String, dynamic>{};
+    final alpaca = backend.alpacaPaperStatus ?? _mapOf(health['alpaca_paper_status']);
     final demo = backend.demoWeekStatus ?? const <String, dynamic>{};
     final chief = backend.chiefBotStatus ?? const <String, dynamic>{};
     final aiTeam = backend.aiTeamStatus ?? const <String, dynamic>{};
     final lastChief = _mapOf(chief['last_chief_decision']);
+    final executionMode = _executionModeRaw(health: health, chief: chief);
+    final isAlpacaMode = executionMode == 'ALPACA_PAPER';
+    final brokerConnected = _brokerConnected(
+      executionMode: executionMode,
+      health: health,
+      alpaca: alpaca,
+    );
     final hasData =
         backend.systemHealth != null ||
         backend.demoWeekStatus != null ||
+        backend.alpacaPaperStatus != null ||
         backend.chiefBotStatus != null ||
         backend.aiTeamStatus != null ||
         backend.backendPortfolio != null ||
         backend.backendPerformance != null;
     final checklist = _readinessChecklist(
       health: health,
+      alpaca: alpaca,
       aiTeam: aiTeam,
       demo: demo,
       chief: chief,
@@ -165,26 +175,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const Divider(height: 20),
               _statusRow(
                 context,
-                'System Health',
+                'Backend connected',
                 health['backend_ok'] == true ? 'תקין' : 'לא זמין',
                 positive: health['backend_ok'] == true,
               ),
               _statusRow(
                 context,
                 'Execution Mode',
-                _friendlyExecutionMode(
-                  health['execution_mode'] ?? chief['execution_mode'],
+                executionMode,
+              ),
+              _statusRow(
+                context,
+                _brokerStatusLabel(executionMode),
+                brokerConnected ? 'connected' : 'not connected',
+                positive: brokerConnected,
+              ),
+              if (isAlpacaMode) ...[
+                _statusRow(
+                  context,
+                  'Paper trading only',
+                  _boolText(alpaca['paper_trading_only']),
+                  positive: alpaca['paper_trading_only'] == true,
                 ),
-              ),
+                _statusRow(
+                  context,
+                  'Live trading allowed',
+                  _boolText(alpaca['live_trading_allowed']),
+                  positive: alpaca['live_trading_allowed'] != true,
+                ),
+              ] else ...[
+                _statusRow(
+                  context,
+                  'Demo Week Mode',
+                  demo['enabled'] == true ? 'פעיל' : 'כבוי',
+                  positive: demo['enabled'] != true,
+                ),
+              ],
               _statusRow(
                 context,
-                'Demo Week Mode',
-                demo['enabled'] == true ? 'פעיל' : 'כבוי',
-                positive: demo['enabled'] != true,
-              ),
-              _statusRow(
-                context,
-                'Chief AI Autonomy',
+                'Chief autonomy',
                 chief['enabled'] == true ? 'פעיל' : 'כבוי',
                 positive: chief['enabled'] != true,
               ),
@@ -336,6 +365,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               items: const [
                 DropdownMenuItem(value: 'PAPER_DEMO', child: Text('דמו נייר')),
                 DropdownMenuItem(
+                  value: 'ALPACA_PAPER',
+                  child: Text('Alpaca Paper'),
+                ),
+                DropdownMenuItem(
                   value: 'BINANCE_TESTNET',
                   child: Text('טסטנט Binance'),
                 ),
@@ -371,7 +404,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _botStatusCard(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final health = widget.backendProvider.systemHealth ?? const <String, dynamic>{};
+    final chief = widget.backendProvider.chiefBotStatus ?? const <String, dynamic>{};
+    final executionMode = _executionModeRaw(health: health, chief: chief);
+    final alpacaMode = executionMode == 'ALPACA_PAPER';
     final started =
+        !alpacaMode &&
         widget.backendProvider.backendBotStatusDetails?['status'] == 'started';
     final kill =
         widget.backendProvider.backendBotStatusDetails?['kill_switch'] ??
@@ -385,7 +423,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               value: started,
-              onChanged: widget.backendProvider.isBackendBotLoading
+              onChanged: alpacaMode || widget.backendProvider.isBackendBotLoading
                   ? null
                   : (value) async {
                       final ok = value
@@ -405,14 +443,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     },
               activeThumbColor: scheme.primary,
               title: Text(
-                started ? 'הבוט פעיל' : 'הבוט כבוי',
+                alpacaMode
+                    ? 'מתג הבוט כבוי במצב Alpaca Paper'
+                    : started
+                    ? 'הבוט פעיל'
+                    : 'הבוט כבוי',
                 style: TextStyle(
                   fontWeight: FontWeight.w900,
                   color: started ? scheme.primary : scheme.onSurfaceVariant,
                 ),
               ),
               subtitle: Text(
-                started ? 'לחץ על המתג כדי לכבות' : 'לחץ על המתג כדי להפעיל',
+                alpacaMode
+                    ? 'הדמו בענן משתמש בסטטוס ו-Chief בלבד. לא מפעילים bot loop מכאן.'
+                    : started
+                    ? 'לחץ על המתג כדי לכבות'
+                    : 'לחץ על המתג כדי להפעיל',
                 style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
               ),
             ),
@@ -557,18 +603,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   List<_ReadinessItem> _readinessChecklist({
     required Map<String, dynamic> health,
+    required Map<String, dynamic> alpaca,
     required Map<String, dynamic> aiTeam,
     required Map<String, dynamic> demo,
     required Map<String, dynamic> chief,
     required Map<String, dynamic>? portfolio,
     required Map<String, dynamic>? performance,
   }) {
-    final executionMode = (health['execution_mode'] ?? chief['execution_mode'])
-        ?.toString();
-    final binanceOk = health['binance_testnet_ok'] == true;
-    final cryptoDemoState = binanceOk
+    final executionMode = _executionModeRaw(health: health, chief: chief);
+    final isAlpacaMode = executionMode == 'ALPACA_PAPER';
+    final brokerOk = _brokerConnected(
+      executionMode: executionMode,
+      health: health,
+      alpaca: alpaca,
+    );
+    final brokerState = brokerOk
         ? _ReadinessState.ok
-        : executionMode == 'BINANCE_TESTNET'
+        : (executionMode == 'BINANCE_TESTNET' || isAlpacaMode)
         ? _ReadinessState.blocked
         : _ReadinessState.warning;
     final aiProvider = health['ai_provider']?.toString();
@@ -588,9 +639,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         critical: true,
       ),
       _ReadinessItem(
-        label: 'Crypto Demo connected',
-        state: cryptoDemoState,
-        critical: executionMode == 'BINANCE_TESTNET',
+        label: '${_brokerStatusLabel(executionMode)} connected',
+        state: brokerState,
+        critical: executionMode == 'BINANCE_TESTNET' || isAlpacaMode,
       ),
       _ReadinessItem(
         label: 'AI provider connected or fallback active',
@@ -600,8 +651,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
       _ReadinessItem(
         label: '4 agents available',
-        state: agentsTotal == 4 ? _ReadinessState.ok : _ReadinessState.blocked,
-        critical: true,
+        state: health['agents_ready'] == true || agentsTotal == 4
+            ? _ReadinessState.ok
+            : isAlpacaMode
+            ? _ReadinessState.warning
+            : _ReadinessState.blocked,
+        critical: !isAlpacaMode,
       ),
       _ReadinessItem(
         label: 'Chief AI Manager ready',
@@ -610,10 +665,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
             : _ReadinessState.blocked,
         critical: true,
       ),
-      _ReadinessItem(
-        label: 'Demo Week Mode available',
-        state: demoWeekLoaded ? _ReadinessState.ok : _ReadinessState.warning,
-      ),
+      if (!isAlpacaMode)
+        _ReadinessItem(
+          label: 'Demo Week Mode available',
+          state: demoWeekLoaded ? _ReadinessState.ok : _ReadinessState.warning,
+        ),
       _ReadinessItem(
         label: 'Chief Autonomy currently OFF',
         state: !chiefLoaded
@@ -695,12 +751,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return <String, dynamic>{};
   }
 
-  String _friendlyExecutionMode(dynamic raw) {
-    return switch (raw?.toString()) {
-      'BINANCE_TESTNET' => 'Crypto Demo',
-      'PAPER_DEMO' => 'Paper Demo',
-      _ => raw?.toString() ?? '—',
+  String _executionModeRaw({
+    required Map<String, dynamic> health,
+    required Map<String, dynamic> chief,
+  }) {
+    return (health['execution_mode'] ??
+            chief['execution_mode'] ??
+            widget.backendProvider.backendExecutionModeLabel)
+        .toString();
+  }
+
+  String _brokerStatusLabel(String executionMode) {
+    return switch (executionMode) {
+      'ALPACA_PAPER' => 'Alpaca Paper Status',
+      'BINANCE_TESTNET' => 'Binance Testnet Status',
+      _ => 'Paper Demo Status',
     };
+  }
+
+  bool _brokerConnected({
+    required String executionMode,
+    required Map<String, dynamic> health,
+    required Map<String, dynamic> alpaca,
+  }) {
+    if (executionMode == 'ALPACA_PAPER') {
+      return health['alpaca_paper_ok'] == true ||
+          (alpaca['configured'] == true && alpaca['paper_endpoint_ok'] == true);
+    }
+    if (executionMode == 'BINANCE_TESTNET') {
+      return health['binance_testnet_ok'] == true;
+    }
+    return health['backend_ok'] == true;
+  }
+
+  String _boolText(dynamic raw) {
+    if (raw == true) return 'true';
+    if (raw == false) return 'false';
+    return raw?.toString() ?? '—';
   }
 
   String _friendlyStatus(dynamic raw) {
@@ -723,7 +810,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   String _executionModeDropdownValue(BackendProvider backend) {
     final em = backend.backendExecutionModeLabel.trim();
-    if (em == 'PAPER_DEMO' || em == 'BINANCE_TESTNET') return em;
+    if (em == 'PAPER_DEMO' || em == 'BINANCE_TESTNET' || em == 'ALPACA_PAPER') {
+      return em;
+    }
     return 'BINANCE_TESTNET';
   }
 

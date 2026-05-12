@@ -79,6 +79,7 @@ class BackendProvider extends ChangeNotifier {
   bool isAiTeamChatLoading = false;
   String? aiTeamError;
   Map<String, dynamic>? systemHealth;
+  Map<String, dynamic>? alpacaPaperStatus;
   Map<String, dynamic>? demoWeekStatus;
   Map<String, dynamic>? chiefBotStatus;
   bool isDemoStatusLoading = false;
@@ -206,7 +207,11 @@ class BackendProvider extends ChangeNotifier {
   }
 
   String get backendExecutionModeLabel =>
-      backendBotStatusDetails?['execution_mode']?.toString() ?? '—';
+      backendBotStatusDetails?['execution_mode']?.toString() ??
+      systemHealth?['execution_mode']?.toString() ??
+      chiefBotStatus?['execution_mode']?.toString() ??
+      aiTeamStatus?['execution_mode']?.toString() ??
+      '—';
 
   /// Developer/debug only — switches server bot execution (still no keys in app).
   Future<bool> setBackendExecutionMode(String mode) async {
@@ -299,19 +304,53 @@ class BackendProvider extends ChangeNotifier {
     demoStatusError = null;
     try {
       final health = await _client.getSystemHealth();
-      final aiStatus = await _client.getAiTeamStatus();
-      final demo = await _client.getDemoWeekStatus();
-      final chief = await _client.getChiefBotStatus();
-      final portfolio = await _client.getPortfolio();
-      final performance = await _client.getBackendPerformance();
+      final executionMode = health['execution_mode']?.toString();
+      final errors = <String>[];
+      final alpaca = executionMode == 'ALPACA_PAPER'
+          ? await _tryDemoStatusFetch(
+              () => _client.getAlpacaPaperStatus(),
+              errors,
+              'Alpaca Paper status',
+            )
+          : null;
+      final aiStatus = executionMode == 'ALPACA_PAPER'
+          ? null
+          : await _tryDemoStatusFetch(
+              () => _client.getAiTeamStatus(),
+              errors,
+              'AI team status',
+            );
+      final demo = executionMode == 'ALPACA_PAPER'
+          ? null
+          : await _tryDemoStatusFetch(
+              () => _client.getDemoWeekStatus(),
+              errors,
+              'Demo Week status',
+            );
+      final chief = await _tryDemoStatusFetch(
+        () => _client.getChiefBotStatus(),
+        errors,
+        'Chief bot status',
+      );
+      final portfolio = await _tryDemoStatusFetch(
+        () => _client.getPortfolio(),
+        errors,
+        'Portfolio',
+      );
+      final performance = await _tryDemoStatusFetch(
+        () => _client.getBackendPerformance(),
+        errors,
+        'Performance',
+      );
       systemHealth = health;
+      alpacaPaperStatus = alpaca;
       aiTeamStatus = aiStatus;
       demoWeekStatus = demo;
       chiefBotStatus = chief;
       backendPortfolio = portfolio;
       backendPerformance = performance;
       lastDemoStatusUpdatedAt = DateTime.now();
-      demoStatusError = null;
+      demoStatusError = errors.isEmpty ? null : errors.join('\n');
     } catch (e) {
       demoStatusError = friendlyBackendMessage(e.toString()) ?? e.toString();
     } finally {
@@ -319,6 +358,20 @@ class BackendProvider extends ChangeNotifier {
         isDemoStatusLoading = false;
       }
       notifyListeners();
+    }
+  }
+
+  Future<Map<String, dynamic>?> _tryDemoStatusFetch(
+    Future<Map<String, dynamic>> Function() load,
+    List<String> errors,
+    String label,
+  ) async {
+    try {
+      return await load();
+    } catch (e) {
+      final message = friendlyBackendMessage(e.toString()) ?? e.toString();
+      errors.add('$label: $message');
+      return null;
     }
   }
 

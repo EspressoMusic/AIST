@@ -312,6 +312,14 @@ class BackendApiClient {
     return _decodeObject(res);
   }
 
+  /// `GET /alpaca-paper/status` — read-only Alpaca Paper broker status.
+  Future<Map<String, dynamic>> getAlpacaPaperStatus() async {
+    final res = await http
+        .get(Uri.parse('$baseUrl/alpaca-paper/status'))
+        .timeout(_timeout);
+    return _decodeObject(res);
+  }
+
   /// `POST /ai-advisor/team-chat` — ask all agent personas for opinions.
   Future<Map<String, dynamic>> postAgentTeamChat(String message) async {
     final res = await http
