@@ -9,6 +9,8 @@ from app.services.bot_engine_service import BotEngineService
 from app.services.bot_state_service import BotStateService
 from app.services.binance_testnet_service import BinanceTestnetService
 from app.services.alpaca_paper_service import AlpacaPaperService
+from app.services.alpaca_news_service import AlpacaNewsService
+from app.services.analyst_data_service import AnalystDataService
 from app.services.ai_provider_service import AIProviderService
 from app.services.exchange_service import ExchangeService
 from app.services.news_source_service import NewsSourceService
@@ -38,6 +40,8 @@ _apply_initial_execution_mode()
 # Portfolio reads from the same BotStateService as the bot engine
 _binance_testnet_service = BinanceTestnetService(_settings)
 _alpaca_paper_service = AlpacaPaperService(_settings)
+_alpaca_news_service = AlpacaNewsService(_settings)
+_analyst_data_service = AnalystDataService(_settings)
 _portfolio_service = PortfolioService(
     _bot_state_service,
     _binance_testnet_service,
@@ -54,6 +58,8 @@ _ai_team_service = AiTeamService(
     news_data=_news_data_service,
     ai_provider=_ai_provider_service,
     alpaca_paper=_alpaca_paper_service,
+    alpaca_news=_alpaca_news_service,
+    analyst_data=_analyst_data_service,
 )
 _bot_engine_service = BotEngineService(
     exchange=_exchange_service,
@@ -79,6 +85,16 @@ def get_binance_testnet_service() -> BinanceTestnetService:
 def get_alpaca_paper_service() -> AlpacaPaperService:
     """Alpaca Paper REST client. Never live trading."""
     return _alpaca_paper_service
+
+
+def get_alpaca_news_service() -> AlpacaNewsService:
+    """Read-only Alpaca Market Data News client."""
+    return _alpaca_news_service
+
+
+def get_analyst_data_service() -> AnalystDataService:
+    """Read-only analyst data client."""
+    return _analyst_data_service
 
 
 def get_ai_provider_service() -> AIProviderService:

@@ -14,6 +14,7 @@ from app.routes import (
     dev_routes,
     health_routes,
     market_routes,
+    market_intel_routes,
     performance_routes,
     portfolio_routes,
     trade_routes,
@@ -41,6 +42,7 @@ def create_app() -> FastAPI:
     app.include_router(alpaca_paper_routes.router)
     app.include_router(binance_testnet_routes.router)
     app.include_router(market_routes.router)
+    app.include_router(market_intel_routes.router)
     app.include_router(portfolio_routes.router)
     app.include_router(performance_routes.router)
     app.include_router(trade_routes.router)

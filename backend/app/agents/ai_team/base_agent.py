@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 AgentAction = Literal["BUY", "SELL", "HOLD"]
 RiskLevel = Literal["LOW", "MEDIUM", "HIGH"]
-AgentStatus = Literal["REAL_DATA", "MOCK", "AI_CONNECTED"]
+AgentStatus = Literal["REAL_DATA", "PARTIAL_REAL_DATA", "MOCK", "AI_CONNECTED"]
 
 
 class AiTeamContext(BaseModel):
@@ -51,6 +51,13 @@ class AgentResponse(BaseModel):
     trade_allowed: bool | None = None
     position_size: float | None = None
     risk_checks: dict[str, Any] | None = None
+    sentiment_score: float | None = None
+    news_sentiment: str | None = None
+    analyst_bias: str | None = None
+    news_items_count: int | None = None
+    top_news: list[dict[str, Any]] | None = None
+    analyst_summary: dict[str, Any] | None = None
+    data_sources: list[str] | None = None
 
 
 class BaseAiTeamAgent(ABC):
@@ -79,6 +86,7 @@ class BaseAiTeamAgent(ABC):
         inferred_status = data_used.get("current_status")
         if current_status == "MOCK" and inferred_status in {
             "REAL_DATA",
+            "PARTIAL_REAL_DATA",
             "MOCK",
             "AI_CONNECTED",
         }:
@@ -97,4 +105,11 @@ class BaseAiTeamAgent(ABC):
             trade_allowed=trade_allowed,
             position_size=position_size,
             risk_checks=risk_checks,
+            sentiment_score=data_used.get("sentiment_score"),
+            news_sentiment=data_used.get("news_sentiment") or data_used.get("market_bias"),
+            analyst_bias=data_used.get("analyst_bias"),
+            news_items_count=data_used.get("news_items_count"),
+            top_news=data_used.get("top_news"),
+            analyst_summary=data_used.get("analyst_summary"),
+            data_sources=data_used.get("data_sources"),
         )

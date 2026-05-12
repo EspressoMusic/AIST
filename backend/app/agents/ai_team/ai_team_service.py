@@ -13,6 +13,8 @@ from app.agents.ai_team.technical_quant_agent import TechnicalQuantAgent
 from app.services.bot_state_service import BotStateService
 from app.services.exchange_service import ExchangeService
 from app.services.alpaca_paper_service import AlpacaPaperService
+from app.services.alpaca_news_service import AlpacaNewsService
+from app.services.analyst_data_service import AnalystDataService
 from app.services.ai_provider_service import AIProviderService
 from app.services.news_data_service import NewsDataService
 from app.config import Settings
@@ -50,6 +52,8 @@ class AiTeamService:
         news_data: NewsDataService | None = None,
         ai_provider: AIProviderService | None = None,
         alpaca_paper: AlpacaPaperService | None = None,
+        alpaca_news: AlpacaNewsService | None = None,
+        analyst_data: AnalystDataService | None = None,
     ) -> None:
         self._exchange = exchange
         self._state = state
@@ -59,7 +63,12 @@ class AiTeamService:
         self._execution_bridge: Any | None = None
         self._agents = [
             RiskExecutionAgent(),
-            MacroSentimentAgent(news_data=news_data, ai_provider=ai_provider),
+            MacroSentimentAgent(
+                news_data=news_data,
+                ai_provider=ai_provider,
+                alpaca_news=alpaca_news,
+                analyst_data=analyst_data,
+            ),
             TechnicalQuantAgent(),
             AssetScoutAgent(),
         ]
@@ -99,6 +108,9 @@ class AiTeamService:
             "context": self._context_summary(context),
             "indicators_summary": self._indicators_summary(outputs),
             "ranked_assets_summary": self._ranked_assets_summary(outputs),
+            "news_items": self._news_items_summary(outputs),
+            "macro_sentiment_summary": self._macro_sentiment_summary(outputs),
+            "analyst_summary": self._analyst_summary(outputs),
             "agents": [output.model_dump() for output in outputs],
             "chief_decision": chief_decision,
             "execution_bridge": bridge_result,
@@ -502,8 +514,13 @@ class AiTeamService:
                 f"{output.reason}"
             )
         if key == "MACRO":
-            bias = data.get("market_bias") or data.get("news_sentiment") or "NEUTRAL"
-            return f"Macro/news view is {bias}. {output.reason}"
+            bias = data.get("news_sentiment") or data.get("market_bias") or "NEUTRAL"
+            analyst_bias = data.get("analyst_bias") or "UNKNOWN"
+            count = data.get("news_items_count", 0)
+            return (
+                f"Macro/news view is {bias} with analyst bias {analyst_bias} "
+                f"from {count} news item(s). {output.reason}"
+            )
         if key == "TECHNICAL":
             indicators = data.get("indicators") if isinstance(data.get("indicators"), dict) else data
             trend = indicators.get("trend_direction", "unclear") if isinstance(indicators, dict) else "unclear"
@@ -651,6 +668,51 @@ class AiTeamService:
             for item in ranked
             if isinstance(item, dict)
         ]
+
+    def _macro_output(self, outputs: list[AgentResponse]) -> AgentResponse | None:
+        return next(
+            (item for item in outputs if item.agent_name == "Macro & Sentiment Agent"),
+            None,
+        )
+
+    def _news_items_summary(self, outputs: list[AgentResponse]) -> list[dict[str, Any]]:
+        macro = self._macro_output(outputs)
+        if macro is None:
+            return []
+        data = macro.data_used or {}
+        top_news = data.get("top_news")
+        if isinstance(top_news, list):
+            return [dict(item) for item in top_news if isinstance(item, dict)]
+        news = data.get("news_items")
+        if isinstance(news, list):
+            return [dict(item) for item in news[:5] if isinstance(item, dict)]
+        return []
+
+    def _macro_sentiment_summary(self, outputs: list[AgentResponse]) -> dict[str, Any]:
+        macro = self._macro_output(outputs)
+        if macro is None:
+            return {}
+        data = macro.data_used or {}
+        return {
+            "status": macro.current_status,
+            "action": macro.action,
+            "confidence": macro.confidence,
+            "risk_level": macro.risk_level,
+            "sentiment_score": data.get("sentiment_score"),
+            "news_sentiment": data.get("news_sentiment") or data.get("market_bias"),
+            "analyst_bias": data.get("analyst_bias"),
+            "news_items_count": data.get("news_items_count", 0),
+            "data_sources": list(data.get("data_sources") or []),
+            "short_reason": macro.short_reason,
+            "reason": macro.reason,
+        }
+
+    def _analyst_summary(self, outputs: list[AgentResponse]) -> dict[str, Any]:
+        macro = self._macro_output(outputs)
+        if macro is None:
+            return {}
+        analyst = macro.data_used.get("analyst_summary") if macro.data_used else {}
+        return dict(analyst) if isinstance(analyst, dict) else {}
 
     def _decision_log_from_preview(
         self,

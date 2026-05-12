@@ -6,10 +6,14 @@ from app.config import Settings, get_settings
 from app.deps import (
     get_ai_provider_service,
     get_alpaca_paper_service,
+    get_alpaca_news_service,
+    get_analyst_data_service,
     get_binance_testnet_service,
     get_bot_state_service,
 )
+from app.services.alpaca_news_service import AlpacaNewsService
 from app.services.alpaca_paper_service import AlpacaPaperService
+from app.services.analyst_data_service import AnalystDataService
 from app.services.ai_provider_service import AIProviderService
 from app.services.binance_testnet_service import BinanceTestnetService
 from app.services.bot_state_service import BotStateService
@@ -34,6 +38,8 @@ def system_health(
     ai: AIProviderService = Depends(get_ai_provider_service),
     binance: BinanceTestnetService = Depends(get_binance_testnet_service),
     alpaca: AlpacaPaperService = Depends(get_alpaca_paper_service),
+    alpaca_news: AlpacaNewsService = Depends(get_alpaca_news_service),
+    analyst: AnalystDataService = Depends(get_analyst_data_service),
 ) -> dict[str, Any]:
     binance_ok = False
     last_error = state.last_error()
@@ -53,6 +59,8 @@ def system_health(
         except Exception as exc:
             last_error = str(exc)
             state.set_last_error(last_error)
+    news_status = alpaca_news.get_status()
+    analyst_status = analyst.get_status()
     return {
         "backend_ok": True,
         "execution_mode": state.execution_mode.value,
@@ -60,7 +68,9 @@ def system_health(
         "binance_testnet_ok": binance_ok,
         "alpaca_paper_ok": alpaca_ok,
         "alpaca_paper_status": alpaca_status,
-        "news_provider_status": {
+        "news_provider_status": news_status
+        if settings.news_provider.strip().upper() == "ALPACA_NEWS"
+        else {
             "provider": settings.news_provider,
             "configured": bool(
                 settings.news_provider == "MOCK"
@@ -69,7 +79,10 @@ def system_health(
                 or settings.newsapi_api_key
                 or settings.news_rss_urls
             ),
+            "ok": settings.news_provider == "MOCK",
+            "message": "Legacy news provider status.",
         },
+        "analyst_provider_status": analyst_status,
         "agents_ready": True,
         "chief_manager_ready": True,
         "demo_week_enabled": state.demo_week_enabled(),

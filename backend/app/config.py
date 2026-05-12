@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # Comma-separated RSS feed URLs, e.g. CoinDesk/Cointelegraph feeds.
     news_rss_urls: str = ""
 
+    # Analyst data provider for Alpaca Paper stock demos.
+    analyst_provider: str = "FMP"
+    fmp_api_key: str = ""
+
     # CORS — comma-separated origins for Flutter web/cloud access.
     # Use "*" for public demo testing; set exact HTTPS origins in production.
     cors_origins: str = "*"

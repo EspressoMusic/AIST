@@ -50,6 +50,7 @@ class ChiefAiManager:
             and execution_gate["technical_allows_buy"]
             and execution_gate["asset_allows_buy"]
             and execution_gate["selected_symbol_matches_context"]
+            and execution_gate["macro_allows_buy"]
             and final_confidence >= 75.0
         )
         final_action: AgentAction = "BUY" if can_buy else "HOLD"
@@ -130,7 +131,29 @@ class ChiefAiManager:
         technical_action = technical.action if technical else "HOLD"
         asset_action = asset.action if asset else "HOLD"
         macro_status = macro.current_status if macro else "MOCK"
-        macro_blocks = bool(macro and macro.veto and macro_status != "MOCK")
+        macro_data = macro.data_used if macro else {}
+        macro_bias = str(
+            (macro_data or {}).get("news_sentiment")
+            or (macro_data or {}).get("market_bias")
+            or "NEUTRAL",
+        ).upper()
+        macro_confidence = float(macro.confidence if macro else 0.0)
+        news_items_count = int((macro_data or {}).get("news_items_count") or 0)
+        macro_bearish_block = (
+            macro_bias == "BEARISH"
+            and macro_confidence >= 65.0
+            and macro_status != "MOCK"
+        )
+        macro_no_news_block = (
+            macro_status == "MOCK"
+            and bool(macro)
+            and context_symbol in {"AAPL", "TSLA", "NVDA", "SPY", "QQQ"}
+        ) or (macro_status != "MOCK" and news_items_count <= 0 and context_symbol in {"AAPL", "TSLA", "NVDA", "SPY", "QQQ"})
+        macro_blocks = bool(
+            (macro and macro.veto and macro_status != "MOCK")
+            or macro_bearish_block
+            or macro_no_news_block
+        )
         checks = {
             "risk_gate": {
                 "passed": risk_allows,
@@ -168,11 +191,19 @@ class ChiefAiManager:
             "macro_gate": {
                 "passed": not macro_blocks,
                 "reason": (
-                    "Macro is MOCK/neutral and cannot block alone."
+                    "Macro has no real stock news; Chief falls back to HOLD."
+                    if macro_no_news_block
+                    else "Macro is strongly bearish; Chief will not BUY."
+                    if macro_bearish_block
+                    else "Macro is MOCK/neutral and cannot block alone."
                     if macro_status == "MOCK"
-                    else "Macro did not veto." if not macro_blocks else "Macro vetoed with real/AI data."
+                    else "Macro did not veto."
+                    if not macro_blocks
+                    else "Macro vetoed with real/AI data."
                 ),
                 "status": macro_status,
+                "news_sentiment": macro_bias,
+                "confidence": macro_confidence,
             },
         }
         return {
@@ -183,6 +214,7 @@ class ChiefAiManager:
             "asset_allows_buy": asset_is_strong and asset_action == "BUY",
             "selected_symbol_matches_context": selected_symbol == context_symbol,
             "macro_blocks": macro_blocks,
+            "macro_allows_buy": not macro_blocks,
             "confidence_threshold": 75.0,
             "checks": checks,
         }
@@ -202,11 +234,18 @@ class ChiefAiManager:
         macro_conf = float(macro.confidence if macro else 0.0)
         confidence = risk_conf * 0.35 + tech_conf * 0.35 + asset_conf * 0.25
         if macro is not None and macro.current_status != "MOCK":
+            macro_data = macro.data_used or {}
+            analyst_bias = str(macro_data.get("analyst_bias") or "UNKNOWN").upper()
+            news_items_count = int(macro_data.get("news_items_count") or 0)
             confidence += macro_conf * 0.05
             if macro.action == "SELL":
                 confidence -= 12.0
             elif macro.action == "HOLD":
                 confidence -= 4.0
+            if analyst_bias == "UNKNOWN":
+                confidence -= 4.0
+            if news_items_count <= 0:
+                confidence -= 8.0
         elif macro is not None and macro.action == "SELL":
             confidence -= 5.0
         if not asset_is_strong:
