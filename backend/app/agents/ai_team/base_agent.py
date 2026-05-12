@@ -30,10 +30,12 @@ class AiTeamContext(BaseModel):
     data_source: str
     asset_market_data: dict[str, dict[str, Any]] = Field(default_factory=dict)
     asset_data_sources: list[str] = Field(default_factory=list)
-    asset_current_status: Literal["REAL_DATA", "MOCK"] = "MOCK"
+    asset_current_status: AgentStatus = "MOCK"
+    asset_fallback_reason: Any | None = None
     technical_candles: list[dict[str, Any]] = Field(default_factory=list)
     technical_data_sources: list[str] = Field(default_factory=list)
-    technical_current_status: Literal["REAL_DATA", "MOCK"] = "MOCK"
+    technical_current_status: AgentStatus = "MOCK"
+    technical_fallback_reason: Any | None = None
     risk_snapshot: dict[str, Any] = Field(default_factory=dict)
 
 

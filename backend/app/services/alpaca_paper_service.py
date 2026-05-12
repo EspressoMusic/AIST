@@ -6,6 +6,7 @@ bot engine and must never be pointed at Alpaca live trading.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -112,11 +113,13 @@ class AlpacaPaperService:
     ) -> list[dict[str, Any]]:
         sym = self._clean_symbol(symbol)
         lim = max(30, min(int(limit), 1000))
+        start = _bars_start_iso(timeframe=timeframe, limit=lim)
         data = self._request_data(
             "GET",
             f"/v2/stocks/{sym}/bars",
             params={
                 "timeframe": timeframe,
+                "start": start,
                 "limit": str(lim),
                 "feed": "iex",
                 "sort": "asc",
@@ -133,30 +136,63 @@ class AlpacaPaperService:
         watched = [self._clean_symbol(symbol) for symbol in symbols if symbol.strip()]
         try:
             self._ensure_ready()
-            assets: dict[str, dict[str, Any]] = {}
-            for symbol in watched:
-                latest = self.get_latest_price(symbol)
-                latest_price = float(latest.get("price") or 0.0)
-                bars = self.get_stock_bars(symbol, timeframe="1Hour", limit=24)
-                assets[symbol] = _stock_snapshot_from_bars(
-                    symbol,
-                    latest_price=latest_price,
-                    bars=bars,
-                    source=str(latest.get("source") or "alpaca_latest_price"),
-                )
-            return {
-                "current_status": "REAL_DATA",
-                "data_sources": ["alpaca_paper_latest_price", "alpaca_stock_bars_iex"],
-                "assets": assets,
-                "error": None,
-            }
         except Exception as exc:
             return {
                 "current_status": "MOCK",
                 "data_sources": ["mock_alpaca_stock_market_snapshot"],
-                "assets": _mock_stock_market_assets(watched),
+                "assets": _mock_stock_market_assets(watched, fallback_reason=str(exc)),
                 "error": str(exc),
             }
+
+        assets: dict[str, dict[str, Any]] = {}
+        errors: dict[str, str] = {}
+        real_symbols = 0
+        bars_symbols = 0
+        for symbol in watched:
+            try:
+                latest = self.get_latest_price(symbol)
+                latest_price = float(latest.get("price") or 0.0)
+                try:
+                    bars = self.get_stock_bars(symbol, timeframe="1Hour", limit=48)
+                    bars_symbols += 1
+                except Exception as bars_exc:
+                    bars = []
+                    errors[symbol] = f"bars unavailable: {bars_exc}"
+                assets[symbol] = _stock_snapshot_from_bars(
+                    symbol,
+                    latest_price=latest_price,
+                    bars=bars,
+                    source="alpaca_latest_price",
+                    fallback_reason=errors.get(symbol),
+                )
+                assets[symbol]["price_source"] = str(latest.get("source") or "alpaca_latest_price")
+                real_symbols += 1
+            except Exception as exc:
+                errors[symbol] = str(exc)
+                assets[symbol] = _mock_stock_market_assets(
+                    [symbol],
+                    fallback_reason=str(exc),
+                )[symbol]
+
+        if real_symbols == len(watched) and bars_symbols == len(watched):
+            status = "REAL_DATA"
+        elif real_symbols > 0:
+            status = "PARTIAL_REAL_DATA"
+        else:
+            status = "MOCK"
+        data_sources = (
+            ["alpaca_market_snapshot", "alpaca_latest_price", "alpaca_stock_bars"]
+            if bars_symbols > 0
+            else ["alpaca_market_snapshot", "alpaca_latest_price"]
+            if real_symbols > 0
+            else ["mock_alpaca_stock_market_snapshot"]
+        )
+        return {
+            "current_status": status,
+            "data_sources": data_sources,
+            "assets": assets,
+            "error": None if not errors else errors,
+        }
 
     def get_stock_bars_snapshot(
         self,
@@ -173,7 +209,7 @@ class AlpacaPaperService:
                 raise RuntimeError("Not enough Alpaca stock candles")
             return {
                 "current_status": "REAL_DATA",
-                "data_sources": ["alpaca_stock_bars_iex"],
+                "data_sources": ["alpaca_stock_bars"],
                 "symbol": sym,
                 "interval": timeframe,
                 "candles": candles,
@@ -332,6 +368,7 @@ def _stock_snapshot_from_bars(
     latest_price: float,
     bars: list[dict[str, Any]],
     source: str,
+    fallback_reason: str | None = None,
 ) -> dict[str, Any]:
     if not bars:
         fallback = _STOCK_FALLBACKS.get(symbol, {"latest_price": latest_price or 100.0})
@@ -359,6 +396,7 @@ def _stock_snapshot_from_bars(
         "low_price": round(min(lows) if lows else close_basis, 8),
         "open_price": round(first_open, 8),
         "source": source,
+        "fallback_reason": fallback_reason,
     }
 
 
@@ -373,7 +411,11 @@ def _normalize_alpaca_bar(row: dict[str, Any], index: int) -> dict[str, float]:
     }
 
 
-def _mock_stock_market_assets(symbols: list[str]) -> dict[str, dict[str, Any]]:
+def _mock_stock_market_assets(
+    symbols: list[str],
+    *,
+    fallback_reason: str | None = None,
+) -> dict[str, dict[str, Any]]:
     return {
         symbol: _stock_snapshot_from_bars(
             symbol,
@@ -382,9 +424,21 @@ def _mock_stock_market_assets(symbols: list[str]) -> dict[str, dict[str, Any]]:
             ),
             bars=_mock_stock_bars(symbol, 48),
             source="mock_stock_price",
+            fallback_reason=fallback_reason,
         )
         for symbol in symbols
     }
+
+
+def _bars_start_iso(*, timeframe: str, limit: int) -> str:
+    tf = timeframe.lower()
+    if "hour" in tf:
+        lookback = timedelta(days=max(10, int(limit / 6) + 4))
+    elif "day" in tf:
+        lookback = timedelta(days=max(60, limit * 2))
+    else:
+        lookback = timedelta(days=max(10, int(limit / 20) + 6))
+    return (datetime.now(timezone.utc) - lookback).isoformat().replace("+00:00", "Z")
 
 
 def _mock_stock_bars(

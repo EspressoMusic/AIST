@@ -60,6 +60,7 @@ class AssetScoutAgent(BaseAiTeamAgent):
                 "reason": reason,
                 "data_sources": context.asset_data_sources,
                 "current_status": context.asset_current_status,
+                "fallback_reason": context.asset_fallback_reason,
                 "correlation": "placeholder",
                 "hot_or_ignored_assets": "placeholder",
                 "focus_symbol": context.symbol,
@@ -111,6 +112,9 @@ class AssetScoutAgent(BaseAiTeamAgent):
                     "quote_volume": round(quote_volume, 4),
                     "intraday_range_pct": round(range_pct, 4),
                     "strength_score": round(strength_score, 2),
+                    "source": row.get("source"),
+                    "price_source": row.get("price_source"),
+                    "fallback_reason": row.get("fallback_reason"),
                 },
             )
 

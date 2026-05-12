@@ -235,6 +235,7 @@ class AiTeamService:
             asset_current_status=str(
                 market_snapshot.get("current_status") or "MOCK",
             ),  # type: ignore[arg-type]
+            asset_fallback_reason=market_snapshot.get("error"),
             technical_candles=[
                 dict(item)
                 for item in list(technical_snapshot.get("candles") or [])
@@ -244,6 +245,7 @@ class AiTeamService:
             technical_current_status=str(
                 technical_snapshot.get("current_status") or "MOCK",
             ),  # type: ignore[arg-type]
+            technical_fallback_reason=technical_snapshot.get("error"),
             risk_snapshot=risk_snapshot,
         )
 
@@ -303,6 +305,7 @@ class AiTeamService:
             asset_current_status=str(
                 market_snapshot.get("current_status") or "MOCK",
             ),  # type: ignore[arg-type]
+            asset_fallback_reason=market_snapshot.get("error"),
             technical_candles=[
                 dict(item)
                 for item in list(technical_snapshot.get("candles") or [])
@@ -312,6 +315,7 @@ class AiTeamService:
             technical_current_status=str(
                 technical_snapshot.get("current_status") or "MOCK",
             ),  # type: ignore[arg-type]
+            technical_fallback_reason=technical_snapshot.get("error"),
             risk_snapshot=risk_snapshot,
         )
 
@@ -614,9 +618,11 @@ class AiTeamService:
             "decisions_count": context.decisions_count,
             "asset_current_status": context.asset_current_status,
             "asset_data_sources": context.asset_data_sources,
+            "asset_fallback_reason": context.asset_fallback_reason,
             "asset_count": len(context.asset_market_data),
             "technical_current_status": context.technical_current_status,
             "technical_data_sources": context.technical_data_sources,
+            "technical_fallback_reason": context.technical_fallback_reason,
             "technical_candle_count": len(context.technical_candles),
             "risk_status": context.risk_snapshot.get("current_status", "REAL_DATA"),
             "risk_snapshot_summary": {

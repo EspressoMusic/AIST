@@ -142,6 +142,7 @@ class TechnicalQuantAgent(BaseAiTeamAgent):
                 **indicators,
                 "current_status": context.technical_current_status,
                 "data_sources": context.technical_data_sources,
+                "fallback_reason": context.technical_fallback_reason,
                 "candle_count": len(candles),
                 "interval": "15m",
                 "macd": "placeholder",
@@ -188,5 +189,6 @@ class TechnicalQuantAgent(BaseAiTeamAgent):
                 "entry_quality_score": round(entry_quality_score, 2),
                 "current_status": "MOCK",
                 "data_sources": ["mock_technical_indicators"],
+                "fallback_reason": context.technical_fallback_reason,
             },
         )
