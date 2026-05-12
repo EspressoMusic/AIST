@@ -78,6 +78,21 @@ class AiTeamService:
         self._execution_bridge = bridge
 
     def preview(self, symbol: str = "BTCUSDT", *, debug: bool = False) -> dict[str, Any]:
+        return self.evaluate(
+            symbol,
+            debug=debug,
+            execute_bridge=False,
+            append_decision=True,
+        )
+
+    def evaluate(
+        self,
+        symbol: str = "BTCUSDT",
+        *,
+        debug: bool = False,
+        execute_bridge: bool = False,
+        append_decision: bool = True,
+    ) -> dict[str, Any]:
         context = self._build_context(symbol)
         outputs: list[AgentResponse] = [agent.analyze(context) for agent in self._agents]
         chief_decision = self._chief.decide(context=context, agent_outputs=outputs)
@@ -87,24 +102,36 @@ class AiTeamService:
             outputs=outputs,
             chief_decision=chief_decision,
         )
-        bridge_result = self._run_safe_execution_bridge(decision_log, chief_decision)
+        if execute_bridge:
+            bridge_result = self._run_safe_execution_bridge(decision_log, chief_decision)
+        else:
+            bridge_result = {
+                "executed": False,
+                "opened_trade_id": None,
+                "skip_reason": "AI Team preview is advisory only.",
+            }
         decision_log = self._decision_with_bridge_result(decision_log, bridge_result)
-        self._state.append_decision(decision_log)
+        if append_decision:
+            self._state.append_decision(decision_log)
         system_status = {
             "current_status": "REAL_DATA",
             "advisory_only": True,
-            "can_execute_trades": False,
+            "can_execute_trades": bool(execute_bridge),
             "agent_count": len(outputs),
             "chief_manager": "ACTIVE",
             "execution_mode": context.execution_mode,
-            "message": "AI team preview is advisory only and does not change current bot trading logic.",
+            "message": (
+                "AI team cycle may execute only through the Chief paper bridge."
+                if execute_bridge
+                else "AI team preview is advisory only and does not change current bot trading logic."
+            ),
         }
         response = {
             "symbol": context.symbol,
             "system_status": system_status,
             "mode": "MOCK_INTERNAL_ONLY",
-            "can_execute_trades": False,
-            "message": "AI team preview is advisory only and does not change current bot trading logic.",
+            "can_execute_trades": bool(execute_bridge),
+            "message": system_status["message"],
             "context": self._context_summary(context),
             "indicators_summary": self._indicators_summary(outputs),
             "ranked_assets_summary": self._ranked_assets_summary(outputs),
@@ -374,7 +401,7 @@ class AiTeamService:
             "daily_loss": float(exec_snapshot.get("realized_pnl_today") or 0.0),
             "daily_loss_limit": EXEC_GATE_DAILY_MAX_LOSS_USDT,
             "trade_count_today": int(exec_snapshot.get("opens_today") or 0),
-            "daily_trade_limit": EXEC_GATE_MAX_OPENS_PER_DAY,
+            "daily_trade_limit": int(self._settings.paper_autonomy_max_daily_trades),
             "consecutive_losses": self._state.consecutive_closed_losses(symbol),
             "max_consecutive_losses": TESTNET_STRATEGY_MAX_CONSECUTIVE_LOSSES,
             "cooldown_active": False,
@@ -383,8 +410,11 @@ class AiTeamService:
             "last_open_utc": exec_snapshot.get("last_open_utc"),
             "drawdown_proxy": self._state.drawdown_proxy(),
             "exec_gate_snapshot": dict(exec_snapshot),
-            "max_position_size": float(DEMO_MAX_ORDER_USDT),
-            "suggested_position_size_default": float(ALPACA_PAPER_DEFAULT_ORDER_USD),
+            "max_position_size": float(self._settings.paper_autonomy_max_position_size),
+            "suggested_position_size_default": min(
+                float(ALPACA_PAPER_DEFAULT_ORDER_USD),
+                float(self._settings.paper_autonomy_max_position_size),
+            ),
         }
         if self._alpaca is None:
             return {
@@ -413,7 +443,12 @@ class AiTeamService:
             daily_loss = min(float(base["daily_loss"]), alpaca_daily_pnl)
             max_position = max(
                 0.0,
-                min(float(DEMO_MAX_ORDER_USDT), float(ALPACA_PAPER_DEFAULT_ORDER_USD), buying_power * 0.1),
+                min(
+                    float(DEMO_MAX_ORDER_USDT),
+                    float(ALPACA_PAPER_DEFAULT_ORDER_USD),
+                    float(self._settings.paper_autonomy_max_position_size),
+                    buying_power * 0.1,
+                ),
             )
             return {
                 **base,

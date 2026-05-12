@@ -16,6 +16,7 @@ from app.services.exchange_service import ExchangeService
 from app.services.news_source_service import NewsSourceService
 from app.services.news_data_service import NewsDataService
 from app.services.portfolio_service import PortfolioService
+from app.services.paper_autonomy_service import PaperAutonomyService
 
 _settings = get_settings()
 
@@ -71,6 +72,11 @@ _bot_engine_service = BotEngineService(
     news_source=_news_source_service,
 )
 _ai_team_service.set_execution_bridge(_bot_engine_service)
+_paper_autonomy_service = PaperAutonomyService(
+    settings=_settings,
+    state=_bot_state_service,
+    ai_team=_ai_team_service,
+)
 
 
 def get_exchange_service() -> ExchangeService:
@@ -119,6 +125,10 @@ def get_bot_state_service() -> BotStateService:
 
 def get_bot_engine_service() -> BotEngineService:
     return _bot_engine_service
+
+
+def get_paper_autonomy_service() -> PaperAutonomyService:
+    return _paper_autonomy_service
 
 
 def get_portfolio_service() -> PortfolioService:

@@ -76,6 +76,42 @@ _REJ_AUTONOMY_DISABLED = "Chief demo autonomy is disabled"
 _REJ_ALPACA_NOT_WIRED = "ALPACA_PAPER is wired through the Chief AI bridge only; regular bot cycle is not wired"
 
 
+def _chief_execution_gate_block_reason(
+    gate: dict[str, Any],
+    *,
+    decision_symbol: str,
+    selected_symbol: str,
+) -> str | None:
+    """Mirror the Chief gate before sending any paper order."""
+    required_flags = (
+        ("risk_allows_trade", "Risk Agent blocked the trade."),
+        ("technical_allows_buy", "Technical Agent is not BUY."),
+        ("asset_allows_buy", "Asset Scout did not approve a strong candidate."),
+        ("selected_symbol_matches_context", "Selected symbol does not match the technical context."),
+        ("macro_allows_buy", "Macro & Sentiment Agent blocked the BUY."),
+    )
+    for key, reason in required_flags:
+        if gate.get(key) is not True:
+            checks = gate.get("checks")
+            if isinstance(checks, dict):
+                check = checks.get(key)
+                if not isinstance(check, dict):
+                    check = {
+                        "risk_allows_trade": checks.get("risk_gate"),
+                        "technical_allows_buy": checks.get("technical_buy_signal"),
+                        "asset_allows_buy": checks.get("asset_strength"),
+                        "selected_symbol_matches_context": checks.get("selected_symbol_matches_context"),
+                        "macro_allows_buy": checks.get("macro_gate"),
+                    }.get(key)
+                if isinstance(check, dict) and check.get("reason"):
+                    return str(check.get("reason"))
+            return reason
+    selected = selected_symbol.strip().upper()
+    if selected and selected != decision_symbol.strip().upper():
+        return f"Chief selected {selected}, but decision symbol is {decision_symbol}."
+    return None
+
+
 def _cumulative_quote_from_binance_response(raw: dict[str, Any]) -> float:
     """
     Quote filled (USDT) from Binance order JSON.
@@ -493,13 +529,19 @@ class BotEngineService:
                 "opened_trade_id": None,
                 "skip_reason": "Chief final action is not BUY.",
             }
-        if decision.confidence < 75.0:
+        confidence_threshold = float(self._settings.paper_autonomy_confidence_threshold)
+        if decision.confidence < confidence_threshold:
             return {
                 "executed": False,
                 "opened_trade_id": None,
-                "skip_reason": "Chief confidence below 75.",
+                "skip_reason": f"Chief confidence below {confidence_threshold:.0f}.",
             }
-        if self._state.effective_open_positions_for_risk() >= 1:
+        max_open_positions = (
+            int(self._settings.paper_autonomy_max_open_positions)
+            if mode == ExecutionMode.ALPACA_PAPER
+            else 1
+        )
+        if self._state.effective_open_positions_for_risk() >= max_open_positions:
             return {
                 "executed": False,
                 "opened_trade_id": None,
@@ -512,24 +554,41 @@ class BotEngineService:
                 "opened_trade_id": None,
                 "skip_reason": "Daily loss limit reached.",
             }
-        if int(snap.get("opens_today") or 0) >= EXEC_GATE_MAX_OPENS_PER_DAY:
+        daily_limit = (
+            int(self._settings.paper_autonomy_max_daily_trades)
+            if mode == ExecutionMode.ALPACA_PAPER
+            else EXEC_GATE_MAX_OPENS_PER_DAY
+        )
+        if int(snap.get("opens_today") or 0) >= daily_limit:
             return {
                 "executed": False,
                 "opened_trade_id": None,
                 "skip_reason": "Daily trade limit reached.",
             }
-        cooldown_reason = self._state.testnet_buy_blocked_reason(decision.symbol)
-        if cooldown_reason is not None:
-            return {
-                "executed": False,
-                "opened_trade_id": None,
-                "skip_reason": cooldown_reason,
-            }
+        if mode == ExecutionMode.BINANCE_TESTNET:
+            cooldown_reason = self._state.testnet_buy_blocked_reason(decision.symbol)
+            if cooldown_reason is not None:
+                return {
+                    "executed": False,
+                    "opened_trade_id": None,
+                    "skip_reason": cooldown_reason,
+                }
         brain = decision.brain or {}
         chief = brain.get("chief_decision") if isinstance(brain, dict) else None
         if isinstance(chief, dict):
             gate = chief.get("execution_gate")
             if isinstance(gate, dict):
+                gate_reason = _chief_execution_gate_block_reason(
+                    gate,
+                    decision_symbol=decision.symbol,
+                    selected_symbol=str(chief.get("selected_symbol") or ""),
+                )
+                if gate_reason is not None:
+                    return {
+                        "executed": False,
+                        "opened_trade_id": None,
+                        "skip_reason": gate_reason,
+                    }
                 checks = gate.get("checks")
                 risk_gate = checks.get("risk_gate") if isinstance(checks, dict) else None
                 if isinstance(risk_gate, dict) and risk_gate.get("veto") is True:
@@ -615,7 +674,14 @@ class BotEngineService:
             else 0.0
         )
         notional = requested_notional or float(ALPACA_PAPER_DEFAULT_ORDER_USD)
-        notional = max(0.0, min(notional, float(DEMO_MAX_ORDER_USDT)))
+        notional = max(
+            0.0,
+            min(
+                notional,
+                float(DEMO_MAX_ORDER_USDT),
+                float(self._settings.paper_autonomy_max_position_size),
+            ),
+        )
         if notional <= 0:
             return {
                 "executed": False,
@@ -701,6 +767,19 @@ class BotEngineService:
                 "skip_reason": None,
                 "closed_trade_ids": [],
                 "execution_detail": "Alpaca Paper MARKET BUY submitted.",
+                "order": {
+                    "source": TRADE_SOURCE_ALPACA_PAPER,
+                    "symbol": sym,
+                    "side": "BUY",
+                    "type": "market",
+                    "notional": round(notional, 2),
+                    "quantity": filled_qty,
+                    "order_id": order.get("id"),
+                    "status": order.get("status"),
+                    "submitted_at": order.get("submitted_at"),
+                    "paper_trading_only": True,
+                    "live_trading_allowed": False,
+                },
                 "alpaca_order_id": order.get("id"),
                 "alpaca_order_status": order.get("status"),
                 "paper_trading_only": True,

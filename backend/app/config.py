@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     analyst_provider: str = "FMP"
     fmp_api_key: str = ""
 
+    # Alpaca Paper autonomous demo loop. Defaults are intentionally OFF/safe.
+    paper_autonomy_loop_enabled: bool = False
+    paper_autonomy_interval_seconds: int = 300
+    paper_autonomy_confidence_threshold: float = 75.0
+    paper_autonomy_max_open_positions: int = 1
+    paper_autonomy_max_daily_trades: int = 3
+    paper_autonomy_max_position_size: float = 1000.0
+
     # CORS — comma-separated origins for Flutter web/cloud access.
     # Use "*" for public demo testing; set exact HTTPS origins in production.
     cors_origins: str = "*"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import date, datetime, timedelta, timezone
+from typing import Any
 
 from app.demo_bot_constants import (
     CHIEF_DEMO_AUTONOMY_ENABLED_DEFAULT,
@@ -57,6 +58,8 @@ class BotStateService:
         self._exec_gate_last_open_utc: datetime | None = None
         self._chief_demo_autonomy_enabled: bool = CHIEF_DEMO_AUTONOMY_ENABLED_DEFAULT
         self._last_chief_decision: dict[str, object] | None = None
+        self._last_paper_cycle_at: datetime | None = None
+        self._last_paper_cycle_result: dict[str, Any] | None = None
         self._demo_week_enabled: bool = DEMO_WEEK_MODE_DEFAULT
         self._last_error: str | None = None
 
@@ -122,6 +125,16 @@ class BotStateService:
 
     def last_chief_decision(self) -> dict[str, object] | None:
         return dict(self._last_chief_decision) if self._last_chief_decision is not None else None
+
+    def set_last_paper_cycle_result(self, result: dict[str, Any]) -> None:
+        self._last_paper_cycle_at = self.utc_now()
+        self._last_paper_cycle_result = dict(result)
+
+    def last_paper_cycle_at(self) -> str | None:
+        return self._last_paper_cycle_at.isoformat() if self._last_paper_cycle_at else None
+
+    def last_paper_cycle_result(self) -> dict[str, Any] | None:
+        return dict(self._last_paper_cycle_result) if self._last_paper_cycle_result is not None else None
 
     def demo_week_enabled(self) -> bool:
         return self._demo_week_enabled
@@ -383,4 +396,6 @@ class BotStateService:
         self._exec_gate_opens_today = 0
         self._exec_gate_last_open_utc = None
         self._last_chief_decision = None
+        self._last_paper_cycle_at = None
+        self._last_paper_cycle_result = None
         self._last_error = None

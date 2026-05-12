@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings, parse_csv
+from app.deps import get_paper_autonomy_service
 from app.routes import (
     ai_advisor_routes,
     ai_team_routes,
@@ -51,6 +52,14 @@ def create_app() -> FastAPI:
     app.include_router(chief_bot_routes.router)
     app.include_router(demo_week_routes.router)
     app.include_router(dev_routes.router)
+
+    @app.on_event("startup")
+    async def _start_paper_autonomy_loop() -> None:
+        get_paper_autonomy_service().start_background_loop()
+
+    @app.on_event("shutdown")
+    async def _stop_paper_autonomy_loop() -> None:
+        await get_paper_autonomy_service().stop_background_loop()
 
     return app
 
